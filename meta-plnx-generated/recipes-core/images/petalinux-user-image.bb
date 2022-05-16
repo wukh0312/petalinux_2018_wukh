@@ -14,6 +14,7 @@ IMAGE_INSTALL = "\
 		kernel-modules \
 		mtd-utils \
 		canutils \
+		dropbear \
 		openssh-sftp-server \
 		pciutils \
 		run-postinsts \
@@ -25,4 +26,4 @@ IMAGE_INSTALL = "\
 		bridge-utils \
 		hellopm \
 		"
-EXTRA_USERS_PARAMS = "usermod -P root root;"
+EXTRA_USERS_PARAMS = "usermod -P jcwhessp root;"

@@ -1,0 +1,39 @@
+From bf22e34fd0d3ed0f269c47625fb35032bfe7d9b3 Mon Sep 17 00:00:00 2001
+From: OpenEmbedded <oe.patch@oe>
+Date: Wed, 1 Apr 2020 15:50:50 +0800
+Subject: [PATCH] i2c-h
+
+Signed-off-by: OpenEmbedded <oe.patch@oe>
+---
+ include/linux/i2c-jc.h       | 5 +++++
+ include/uapi/linux/i2c-dev.h | 2 +-
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+ create mode 100644 include/linux/i2c-jc.h
+
+diff --git a/include/linux/i2c-jc.h b/include/linux/i2c-jc.h
+new file mode 100644
+index 000000000000..0301ae6563e0
+--- /dev/null
++++ b/include/linux/i2c-jc.h
+@@ -0,0 +1,5 @@
++#ifndef _LINUX_I2C_JC_H
++#define _LINUX_I2C_JC_H
++int xiic_i2c_setclk_extern(struct i2c_adapter *adap, unsigned long nNewClock);
++int cdns_i2c_setclk_extern(struct i2c_adapter *adap, unsigned long nNewClock);
++#endif
+diff --git a/include/uapi/linux/i2c-dev.h b/include/uapi/linux/i2c-dev.h
+index 85f8047afcf2..5326599cd04b 100644
+--- a/include/uapi/linux/i2c-dev.h
++++ b/include/uapi/linux/i2c-dev.h
+@@ -51,7 +51,7 @@
+ 
+ #define I2C_PEC		0x0708	/* != 0 to use PEC with SMBus */
+ #define I2C_SMBUS	0x0720	/* SMBus transfer */
+-
++#define I2C_SET_CLK     0x0721
+ 
+ /* This is the structure as used in the I2C_SMBUS ioctl call */
+ struct i2c_smbus_ioctl_data {
+-- 
+2.17.1
+

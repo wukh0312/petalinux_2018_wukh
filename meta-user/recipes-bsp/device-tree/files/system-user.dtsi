@@ -1,3 +1,151 @@
 /include/ "system-conf.dtsi"
 / {
+	dptx@80070000{
+		compatible = "vendor,dp_tx_driver";
+		interrupt-names = "dptxss_dp_irq";
+		interrupt-parent = <&gic>;
+		interrupts = <0 104 4>;
+	};
+	
+	dptx@80072000{
+		compatible = "vendor,dp_tx_driver_1";
+		interrupt-names = "dptxss_dp_irq";
+		interrupt-parent = <&gic>;
+		interrupts = <0 105 4>;
+	};
+	fpga: fpga@00000000{
+		compatible = "vendor,zynq_driver";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+	cdmatest_1: cdmatest@1 {
+		compatible ="xlnx,axi-cdma-test-1.00.a";
+		dmas = <&axi_cdma_0 0>;
+		dma-names = "cdma";
+	} ;
+       dprx:dprx@80074000{
+                compatible = "vendor,dp_rx_driver";
+                interrupt-names = "dprxss_dp_irq";
+                interrupt-parent = <&gic>;
+                interrupts = <0 108 4>;
+        };   
+chosen {
+		bootargs = "earlycon console=ttyPS0,115200 clk_ignore_unused root=/dev/mmcblk0p2 rw rootwait quiet  cpuidle.off=1";
+		stdout-path = "serial0:115200n8";	
+      };	
+	
+
+	
 };
+
+&sdhci0 {
+	status = "okay";
+	no-1-8-v;
+};
+
+
+&sdhci1 {
+	status = "okay";
+	no-1-8-v;
+	disable-wp;
+};
+
+&dwc3_0 {
+  status = "okay";
+  dr_mode = "host";
+  //snps,dis_u3_susphy_quirk;
+};
+ 
+&usb0 {
+    status = "okay";
+};
+
+/* ULPI SMSC USB3320 */
+&usb1 {
+    status = "okay";
+};
+
+&dwc3_1 {
+	status = "okay";
+	dr_mode = "host";
+	//snps,usb3_lpm_capable;
+	//phy-names = "usb3-phy";
+	//phys = <&lane2 PHY_TYPE_USB3 0 2 26000000>;
+};
+
+
+&gem2 {
+	status = "okay";
+	phy-handle = <&phy0>;
+        phy-mode = "sgmii";
+
+        phy0: phy@0{		
+                     reg = <0>;
+                };
+                
+        phy1: phy@1{		
+                 reg = <1>;
+            };	
+      
+};
+
+&gem3 {
+   
+    status = "okay";
+	phy-handle = <&phy1>;
+	phy-mode = "sgmii";
+
+   
+
+};
+
+&lvds_clock{
+        clock-output-names = "clk_out1","clk_out2","clk_out3","clk_out4";
+        status = "okay";
+};
+
+&mipi_dsi_clock{
+        clock-output-names = "clk_out1";
+        status = "okay";
+};
+
+&spi_clock{
+	clock-output-names =  "clk_out1";
+        status = "okay";
+};
+
+&vid_clock{
+	clock-output-names =  "clk_out1","clk_out2","clk_out3";
+        status = "okay";
+};
+
+&ttl_clock{
+	clock-output-names =  "clk_out1","clk_out2";
+        status = "okay";
+};
+
+&axi_cdma_0 {
+	status = "okay";
+	dma-coherent;
+};
+
+
+&qspi {
+	status = "okay";
+	spi-rx-bus-width = <4>;
+	spi-tx-bus-width = <4>;
+	#address-cells = <1>;
+	#size-cells = <0>;	
+	flash0: flash@0 { 
+		spi-rx-bus-width = <4>;
+		spi-tx-bus-width = <4>;
+		compatible = "spidev";
+		//compatible = "w25q128","winbond,w25q128";
+		reg = <0x0>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		spi-max-frequency = <50000000>;
+	};
+};
+
+

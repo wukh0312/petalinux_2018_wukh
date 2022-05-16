@@ -1,0 +1,1088 @@
+From 904aed5cdeb54e8d82915045e7e3986c8c425c4a Mon Sep 17 00:00:00 2001
+From: OpenEmbedded <oe.patch@oe>
+Date: Sat, 23 Jan 2021 13:18:13 +0800
+Subject: [PATCH] i2c_c
+
+Signed-off-by: OpenEmbedded <oe.patch@oe>
+---
+ drivers/i2c/busses/i2c-cadence.c |  14 +-
+ drivers/i2c/busses/i2c-xiic.c    | 212 +++++++++++-
+ drivers/i2c/i2c-dev.c            | 723 ++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 931 insertions(+), 18 deletions(-)
+
+diff --git a/drivers/i2c/busses/i2c-cadence.c b/drivers/i2c/busses/i2c-cadence.c
+index 20ac432..4faeaad 100644
+--- a/drivers/i2c/busses/i2c-cadence.c
++++ b/drivers/i2c/busses/i2c-cadence.c
+@@ -21,7 +21,7 @@
+ #include <linux/gpio/consumer.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/pinctrl/consumer.h>
+-
++#include <linux/i2c-jc.h>
+ /* Register offsets for the I2C device. */
+ #define CDNS_I2C_CR_OFFSET		0x00 /* Control Register, RW */
+ #define CDNS_I2C_SR_OFFSET		0x04 /* Status Register, RO */
+@@ -1117,6 +1117,18 @@ static int cdns_i2c_setclk(unsigned long clk_in, struct cdns_i2c *id)
+ 	return 0;
+ }
+ 
++int cdns_i2c_setclk_extern(struct i2c_adapter *adap, unsigned long nNewClock)
++{
++    int ret = 0;
++    struct cdns_i2c *id = adap->algo_data;
++    printk("i2c nNewClock=%d \r\n",nNewClock);
++    id->i2c_clk = nNewClock;
++    ret = cdns_i2c_setclk(id->input_clk, id);
++
++    return ret;
++}
++EXPORT_SYMBOL(cdns_i2c_setclk_extern);
++
+ /**
+  * cdns_i2c_clk_notifier_cb - Clock rate change callback
+  * @nb:		Pointer to notifier block
+diff --git a/drivers/i2c/busses/i2c-xiic.c b/drivers/i2c/busses/i2c-xiic.c
+index 63fc714..1fa8fd4 100644
+--- a/drivers/i2c/busses/i2c-xiic.c
++++ b/drivers/i2c/busses/i2c-xiic.c
+@@ -39,7 +39,7 @@
+ #include <linux/of.h>
+ #include <linux/clk.h>
+ #include <linux/pm_runtime.h>
+-
++#include <linux/i2c-jc.h>
+ #define DRIVER_NAME "xiic-i2c"
+ 
+ enum xilinx_i2c_state {
+@@ -89,6 +89,19 @@ struct xiic_i2c {
+ #define XIIC_MSB_OFFSET 0
+ #define XIIC_REG_OFFSET (0x100+XIIC_MSB_OFFSET)
+ 
++
++/* Timing Parameter Register */
++#define XIIC_TPR_REG_OFFSET_TSUSTA  (0x28+XIIC_REG_OFFSET)	/* 32 128h TSUSTA   Timing Parameter TSUSTA Register (TSUSTA)    */
++#define XIIC_TPR_REG_OFFSET_TSUSTO  (0x2c+XIIC_REG_OFFSET)	/* 32 12Ch TSUSTO    Timing Parameter TSUSTO Register (TSUSTO)   */
++#define XIIC_TPR_REG_OFFSET_THDSTA  (0x30+XIIC_REG_OFFSET)	/* 32 130h THDSTA   Timing Parameter THDSTA Register (THDSTA)    */
++#define XIIC_TPR_REG_OFFSET_TSUDAT  (0x34+XIIC_REG_OFFSET)	/* 32 134h TSUDAT   Timing Parameter TSUDAT Register (TSUDAT)    */
++#define XIIC_TPR_REG_OFFSET_TBUF    (0x38+XIIC_REG_OFFSET)	/* 32 138h TBUF      Timing Parameter TBUF Register (TBUF)        */
++#define XIIC_TPR_REG_OFFSET_THIGH   (0x3c+XIIC_REG_OFFSET)	/* 32 13Ch THIGH     Timing Parameter THIGH Register (THIGH)      */
++#define XIIC_TPR_REG_OFFSET_TLOW    (0x40+XIIC_REG_OFFSET)	/* 32 140h TLOW      Timing Parameter TLOW Register (TLOW)        */
++#define XIIC_TPR_REG_OFFSET_THDDAT  (0x44+XIIC_REG_OFFSET)	/* 32 144h THDDAT   Timing Parameter THDDAT Register (THDDAT)   */
++
++
++
+ /*
+  * Register offsets in bytes from RegisterBase. Three is added to the
+  * base offset to access LSB (IBM style) of the word
+@@ -179,6 +192,7 @@ struct xiic_i2c {
+ 
+ static int xiic_start_xfer(struct xiic_i2c *i2c);
+ static void __xiic_start_xfer(struct xiic_i2c *i2c);
++static int s_nNewClock = 100;
+ 
+ /*
+  * For the register read and write functions, a little-endian and big-endian
+@@ -258,6 +272,125 @@ static inline void xiic_irq_clr_en(struct xiic_i2c *i2c, u32 mask)
+ 	xiic_irq_en(i2c, mask);
+ }
+ 
++
++static inline int xiic_set_clock(struct xiic_i2c *i2c)
++{
++    int ret = 0;
++
++    u32 ier_tsusta = 0;
++    u32 ier_tsusto = 0;
++    u32 ier_thdsta = 0;
++    u32 ier_tsudat = 0;
++    u32 ier_tbuf   = 0;
++    u32 ier_thigh  = 0;
++    u32 ier_tlow   = 0;
++    u32 ier_thddat = 0;
++
++    //1M
++    if(s_nNewClock == 1000)
++    {
++        printk(" xiic_set_clock set 1MHz and get reg\r\n");
++
++        ier_tsusta = 37;
++        ier_tsusto = 37;
++        ier_thdsta = 37;
++        ier_tsudat = 16;
++        ier_tbuf   = 61;
++        ier_thigh  = 43;
++        ier_tlow   = 43;
++        ier_thddat = 1;
++        
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++    }
++    // 400KHz
++    else if(s_nNewClock == 400)
++    {
++        printk(" xiic_set_clock set 400KHz and get reg name=%s,base=0x%x\r\n", i2c->adap.name,i2c->base);
++        ier_tsusta = 90;
++        ier_tsusto = 90;
++        ier_thdsta = 90;
++        ier_tsudat = 40;
++        ier_tbuf   = 160;
++        //104 - 396kHz -2.48us, 106 - 390kHz, 108 - 384kHz, 112 - 373KHz  ,   118 - 357KHz
++        ier_thigh  = 106;// 106; // 108; // 110; // 112; // 114;// 116;// 100;// 118;
++        ier_tlow   = 106;// 106; // 108; // 110; // 112; // 114;// 116;// 100;//118;
++        ier_thddat = 1;
++
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++
++    }
++    // 100KHz
++    else if(s_nNewClock == 100)
++    {
++        printk(" xiic_set_clock set 100KHz and get reg\r\n");
++
++        ier_tsusta = 570;
++        ier_tsusto = 500;
++        ier_thdsta = 430;
++        ier_tsudat = 55;
++        ier_tbuf   = 500;
++        ier_thigh  = 493;
++        ier_tlow   = 493;
++        ier_thddat = 1;
++        
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++    }
++    // 50KHz
++    else if(s_nNewClock == 50)
++    {
++        printk(" xiic_set_clock set 50KHz and get reg\r\n");
++
++        ier_tsusta = 570;
++        ier_tsusto = 500;
++        ier_thdsta = 430;
++        ier_tsudat = 55;
++        ier_tbuf   = 500;
++        ier_thigh  = 993;
++        ier_tlow   = 993;
++        ier_thddat = 1;
++        
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(i2c, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++
++
++    }
++    else
++    {
++        printk("i2c xiic_set_clock xiic error nNewClock=%d \r\n",s_nNewClock);
++        ret = -1;
++    }
++    
++    return ret;
++}
++
++
+ static int xiic_clear_rx_fifo(struct xiic_i2c *i2c)
+ {
+ 	u8 sr;
+@@ -351,20 +484,46 @@ static void xiic_fill_tx_fifo(struct xiic_i2c *i2c)
+ {
+ 	u8 fifo_space = xiic_tx_fifo_space(i2c);
+ 	int len = xiic_tx_space(i2c);
++    u8 fifo_spaceTmp = fifo_space;
++    int i = 0;
++	printk("[%s,%d] in	len=%d,fifo_space=%d,fifo_spaceTmp=%d\n", __func__,__LINE__,len,fifo_space,fifo_spaceTmp);
+ 
+-	len = (len > fifo_space) ? fifo_space : len;
++	//len = (len > fifo_space) ? fifo_space : len;
++	printk("[%s,%d] new len=%d,fifo_space=%d\n", __func__,__LINE__,len,fifo_space);
++	
+ 
+ 	dev_dbg(i2c->adap.dev.parent, "%s entry, len: %d, fifo space: %d\n",
+ 		__func__, len, fifo_space);
+ 
+-	while (len--) {
+-		u16 data = i2c->tx_msg->buf[i2c->tx_pos++];
+-		if ((xiic_tx_space(i2c) == 0) && (i2c->nmsgs == 1)) {
+-			/* last message in transfer -> STOP */
+-			data |= XIIC_TX_DYN_STOP_MASK;
+-			dev_dbg(i2c->adap.dev.parent, "%s TX STOP\n", __func__);
++	while (len > 0) {
++		fifo_spaceTmp = xiic_tx_fifo_space(i2c);
++		while(fifo_spaceTmp <= 0)
++		{
++			udelay(10);
++
++			fifo_spaceTmp = xiic_tx_fifo_space(i2c);
++
++			printk("[%s,%d] new fifo_spaceTmp=%d\n", __func__,__LINE__,fifo_spaceTmp);
++			
+ 		}
+-		xiic_setreg16(i2c, XIIC_DTR_REG_OFFSET, data);
++
++		fifo_space = xiic_tx_fifo_space(i2c);
++
++		fifo_spaceTmp =  (fifo_space > len) ? len : fifo_space;
++		for(i = 0; i < fifo_spaceTmp; i++)
++		{
++			u16 data = i2c->tx_msg->buf[i2c->tx_pos++];
++			if ((xiic_tx_space(i2c) == 0) && (i2c->nmsgs == 1)) {
++				/* last message in transfer -> STOP */
++				data |= XIIC_TX_DYN_STOP_MASK;
++				dev_dbg(i2c->adap.dev.parent, "%s TX STOP\n", __func__);
++			}
++			
++			xiic_setreg16(i2c, XIIC_DTR_REG_OFFSET, data);
++			printk("[%s,%d] send data=0x%x,len=%d,i2c->nmsgs=%d,fifo_spaceTmp=%d,i=%d\n", __func__,__LINE__,data,len,i2c->nmsgs,fifo_spaceTmp,i);
++		}
++
++		len = xiic_tx_space(i2c);
+ 	}
+ }
+ 
+@@ -688,6 +847,7 @@ static int xiic_start_xfer(struct xiic_i2c *i2c)
+ 	mutex_lock(&i2c->lock);
+ 
+ 	ret = xiic_reinit(i2c);
++	xiic_set_clock(i2c);
+ 	if (!ret)
+ 		__xiic_start_xfer(i2c);
+ 
+@@ -776,7 +936,10 @@ static int xiic_i2c_probe(struct platform_device *pdev)
+ 
+ 	irq = platform_get_irq(pdev, 0);
+ 	if (irq < 0)
+-		return irq;
++	{
++	    printk("xiic_i2c_probe platform_get_irq irq=%d, name=%s \r\n", irq, pdev->name);
++		//return irq;
++	}
+ 
+ 	pdata = dev_get_platdata(&pdev->dev);
+ 
+@@ -806,13 +969,17 @@ static int xiic_i2c_probe(struct platform_device *pdev)
+ 	pm_runtime_use_autosuspend(i2c->dev);
+ 	pm_runtime_set_active(i2c->dev);
+ 	pm_runtime_enable(i2c->dev);
+-	ret = devm_request_threaded_irq(&pdev->dev, irq, xiic_isr,
+-					xiic_process, IRQF_ONESHOT,
+-					pdev->name, i2c);
+ 
+-	if (ret < 0) {
+-		dev_err(&pdev->dev, "Cannot claim IRQ\n");
+-		goto err_clk_dis;
++	if(irq > 0)
++	{
++    	ret = devm_request_threaded_irq(&pdev->dev, irq, xiic_isr,
++    					xiic_process, IRQF_ONESHOT,
++    					pdev->name, i2c);
++
++    	if (ret < 0) {
++    		dev_err(&pdev->dev, "Cannot claim IRQ\n");
++    		goto err_clk_dis;
++    	}
+ 	}
+ 
+ 	/*
+@@ -855,6 +1022,19 @@ static int xiic_i2c_probe(struct platform_device *pdev)
+ 	return ret;
+ }
+ 
++
++int xiic_i2c_setclk_extern(struct i2c_adapter *adap, unsigned long nNewClock)
++{
++    int ret = 0;
++    
++    printk("i2c xiic_i2c_setclk_extern oldClock=%d,nNewClock=%d \r\n",s_nNewClock,nNewClock);
++    //struct xiic_i2c *i2c = i2c_get_adapdata(adap);
++    s_nNewClock = nNewClock;
++    //xiic_set_clock(i2c);
++    return ret;
++}
++EXPORT_SYMBOL(xiic_i2c_setclk_extern);
++
+ static int xiic_i2c_remove(struct platform_device *pdev)
+ {
+ 	struct xiic_i2c *i2c = platform_get_drvdata(pdev);
+diff --git a/drivers/i2c/i2c-dev.c b/drivers/i2c/i2c-dev.c
+index 1aca742..06724b0 100644
+--- a/drivers/i2c/i2c-dev.c
++++ b/drivers/i2c/i2c-dev.c
+@@ -36,6 +36,121 @@
+ #include <linux/slab.h>
+ #include <linux/uaccess.h>
+ #include <linux/compat.h>
++#include <linux/i2c-jc.h>
++
++#include <linux/errno.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/wait.h>
++#include <linux/platform_data/i2c-xiic.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/mm.h>
++#include <linux/dma-mapping.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include <linux/pm_runtime.h>
++#include <linux/delay.h>
++
++
++#define PL_I2C_INIT   0x730
++#define PL_I2C_START  0x731
++#define PL_I2C_WRITER 0x732
++#define PL_I2C_READ   0x733
++
++
++#define XIIC_STOP		0x00 
++#define XIIC_REPEATED_START	0x01 
++#define XST_SUCCESS                     0L
++#define XST_FAILURE                     1L
++#define XST_DEVICE_NOT_FOUND            2L
++#define XST_DEVICE_BLOCK_NOT_FOUND      3L
++#define XST_INVALID_VERSION             4L
++#define XST_DEVICE_IS_STARTED           5L
++#define XST_DEVICE_IS_STOPPED           6L
++#define XST_FIFO_ERROR                  7L
++
++#define XIIC_MSB_OFFSET 0
++#define XIIC_REG_OFFSET (0x100+XIIC_MSB_OFFSET)
++
++/* Timing Parameter Register */
++#define XIIC_TPR_REG_OFFSET_TSUSTA  (0x28+XIIC_REG_OFFSET)	/* 32 128h TSUSTA   Timing Parameter TSUSTA Register (TSUSTA)    */
++#define XIIC_TPR_REG_OFFSET_TSUSTO  (0x2c+XIIC_REG_OFFSET)	/* 32 12Ch TSUSTO    Timing Parameter TSUSTO Register (TSUSTO)   */
++#define XIIC_TPR_REG_OFFSET_THDSTA  (0x30+XIIC_REG_OFFSET)	/* 32 130h THDSTA   Timing Parameter THDSTA Register (THDSTA)    */
++#define XIIC_TPR_REG_OFFSET_TSUDAT  (0x34+XIIC_REG_OFFSET)	/* 32 134h TSUDAT   Timing Parameter TSUDAT Register (TSUDAT)    */
++#define XIIC_TPR_REG_OFFSET_TBUF    (0x38+XIIC_REG_OFFSET)	/* 32 138h TBUF      Timing Parameter TBUF Register (TBUF)        */
++#define XIIC_TPR_REG_OFFSET_THIGH   (0x3c+XIIC_REG_OFFSET)	/* 32 13Ch THIGH     Timing Parameter THIGH Register (THIGH)      */
++#define XIIC_TPR_REG_OFFSET_TLOW    (0x40+XIIC_REG_OFFSET)	/* 32 140h TLOW      Timing Parameter TLOW Register (TLOW)        */
++#define XIIC_TPR_REG_OFFSET_THDDAT  (0x44+XIIC_REG_OFFSET)	/* 32 144h THDDAT   Timing Parameter THDDAT Register (THDDAT)   */
++
++
++/*
++ * Register offsets in bytes from RegisterBase. Three is added to the
++ * base offset to access LSB (IBM style) of the word
++ */
++#define XIIC_CR_REG_OFFSET   (0x00+XIIC_REG_OFFSET)	/* Control Register   */
++#define XIIC_SR_REG_OFFSET   (0x04+XIIC_REG_OFFSET)	/* Status Register    */
++#define XIIC_DTR_REG_OFFSET  (0x08+XIIC_REG_OFFSET)	/* Data Tx Register   */
++#define XIIC_DRR_REG_OFFSET  (0x0C+XIIC_REG_OFFSET)	/* Data Rx Register   */
++#define XIIC_ADR_REG_OFFSET  (0x10+XIIC_REG_OFFSET)	/* Address Register   */
++#define XIIC_TFO_REG_OFFSET  (0x14+XIIC_REG_OFFSET)	/* Tx FIFO Occupancy  */
++#define XIIC_RFO_REG_OFFSET  (0x18+XIIC_REG_OFFSET)	/* Rx FIFO Occupancy  */
++#define XIIC_TBA_REG_OFFSET  (0x1C+XIIC_REG_OFFSET)	/* 10 Bit Address reg */
++#define XIIC_RFD_REG_OFFSET  (0x20+XIIC_REG_OFFSET)	/* Rx FIFO Depth reg  */
++#define XIIC_GPO_REG_OFFSET  (0x24+XIIC_REG_OFFSET)	/* Output Register    */
++
++/* Control Register masks */
++#define XIIC_CR_ENABLE_DEVICE_MASK        0x01	/* Device enable = 1      */
++#define XIIC_CR_TX_FIFO_RESET_MASK        0x02	/* Transmit FIFO reset=1  */
++#define XIIC_CR_MSMS_MASK                 0x04	/* Master starts Txing=1  */
++#define XIIC_CR_DIR_IS_TX_MASK            0x08	/* Dir of tx. Txing=1     */
++#define XIIC_CR_NO_ACK_MASK               0x10	/* Tx Ack. NO ack = 1     */
++#define XIIC_CR_REPEATED_START_MASK       0x20	/* Repeated start = 1     */
++#define XIIC_CR_GENERAL_CALL_MASK         0x40	/* Gen Call enabled = 1   */
++
++/* Status Register masks */
++#define XIIC_SR_GEN_CALL_MASK             0x01	/* 1=a mstr issued a GC   */
++#define XIIC_SR_ADDR_AS_SLAVE_MASK        0x02	/* 1=when addr as slave   */
++#define XIIC_SR_BUS_BUSY_MASK             0x04	/* 1 = bus is busy        */
++#define XIIC_SR_MSTR_RDING_SLAVE_MASK     0x08	/* 1=Dir: mstr <-- slave  */
++#define XIIC_SR_TX_FIFO_FULL_MASK         0x10	/* 1 = Tx FIFO full       */
++#define XIIC_SR_RX_FIFO_FULL_MASK         0x20	/* 1 = Rx FIFO full       */
++#define XIIC_SR_RX_FIFO_EMPTY_MASK        0x40	/* 1 = Rx FIFO empty      */
++#define XIIC_SR_TX_FIFO_EMPTY_MASK        0x80	/* 1 = Tx FIFO empty      */
++
++/* Interrupt Status Register masks    Interrupt occurs when...       */
++#define XIIC_INTR_ARB_LOST_MASK           0x01	/* 1 = arbitration lost   */
++#define XIIC_INTR_TX_ERROR_MASK           0x02	/* 1=Tx error/msg complete */
++#define XIIC_INTR_TX_EMPTY_MASK           0x04	/* 1 = Tx FIFO/reg empty  */
++#define XIIC_INTR_RX_FULL_MASK            0x08	/* 1=Rx FIFO/reg=OCY level */
++#define XIIC_INTR_BNB_MASK                0x10	/* 1 = Bus not busy       */
++#define XIIC_INTR_AAS_MASK                0x20	/* 1 = when addr as slave */
++#define XIIC_INTR_NAAS_MASK               0x40	/* 1 = not addr as slave  */
++#define XIIC_INTR_TX_HALF_MASK            0x80	/* 1 = TX FIFO half empty */
++
++/* The following constants specify the depth of the FIFOs */
++#define IIC_RX_FIFO_DEPTH         16	/* Rx fifo capacity               */
++#define IIC_TX_FIFO_DEPTH         16	/* Tx fifo capacity               */
++
++/*
++ * Tx Fifo upper bit masks.
++ */
++#define XIIC_TX_DYN_START_MASK            0x0100 /* 1 = Set dynamic start */
++#define XIIC_TX_DYN_STOP_MASK             0x0200 /* 1 = Set dynamic stop */
++
++/*
++ * The following constants define the register offsets for the Interrupt
++ * registers. There are some holes in the memory map for reserved addresses
++ * to allow other registers to be added and still match the memory map of the
++ * interrupt controller registers
++ */
++#define XIIC_DGIER_OFFSET    0x1C /* Device Global Interrupt Enable Register */
++#define XIIC_IISR_OFFSET     0x20 /* Interrupt Status Register */
++#define XIIC_IIER_OFFSET     0x28 /* Interrupt Enable Register */
++#define XIIC_RESETR_OFFSET   0x40 /* Reset Register */
++
++#define XIIC_RESET_MASK      0xAUL
++
+ 
+ /*
+  * An i2c_dev represents an i2c_adapter ... an I2C or SMBus master, not a
+@@ -56,6 +171,561 @@ struct i2c_dev {
+ static LIST_HEAD(i2c_dev_list);
+ static DEFINE_SPINLOCK(i2c_dev_list_lock);
+ 
++#define CONFIG_SIZE  0x1000
++void __iomem *BaseAddr;
++static int s_nNewClockI2c = 100;
++static inline int xilinx_set_clock(void __iomem * BaseAddress, int nNewClock);
++
++
++struct pl_i2c_start_data{
++	u16 Address;
++	u16 Option;
++};
++
++struct pl_i2c_writer_read_data{
++	u16 Option;
++	u16 ByteCount;
++	u8 Buffer[2048];
++};
++
++
++static inline void xiic_setreg8(void __iomem * BaseAddress, int reg, u8 value)
++{
++	iowrite8(value, BaseAddress + reg);
++}
++
++static inline u8 xiic_getreg8(void __iomem * BaseAddress, int reg)
++{
++	u8 ret;
++
++	ret = ioread8(BaseAddress + reg);
++
++	return ret;
++}
++
++static inline void xiic_setreg32(void __iomem * BaseAddress, int reg, int value)
++{
++	iowrite32(value, BaseAddress + reg);
++}
++
++static inline int xiic_getreg32(void __iomem * BaseAddress, int reg)
++{
++	u32 ret;
++
++	ret = ioread32(BaseAddress + reg);
++
++	return ret;
++}
++
++#define XIic_ReadIisr(BaseAddress) 					\
++			xiic_getreg32((BaseAddress), XIIC_IISR_OFFSET)
++
++
++#define XIic_ReadTxFifoSize(BaseAddress) 					\
++			xiic_getreg32((BaseAddress), XIIC_TFO_REG_OFFSET)
++
++#define XIic_ReadRxFifoSize(BaseAddress) 					\
++			xiic_getreg32((BaseAddress), XIIC_RFO_REG_OFFSET)
++
++#define XIic_WriteIisr(BaseAddress, Status)	\
++		xiic_setreg32((BaseAddress), XIIC_IISR_OFFSET, (Status))
++
++
++#define XIic_ClearIisr(BaseAddress, InterruptMask)		\
++	XIic_WriteIisr((BaseAddress),			\
++	XIic_ReadIisr(BaseAddress) & (InterruptMask))
++
++
++
++#define XIic_DynSend7BitAddress(BaseAddress, SlaveAddress, Operation)	\
++{									\
++	u8 LocalAddr = (u8)(SlaveAddress << 1);				\
++	LocalAddr = (LocalAddr & 0xFE) | (Operation);			\
++	xiic_setreg32(BaseAddress, XIIC_DTR_REG_OFFSET,		\
++			XIIC_TX_DYN_START_MASK | LocalAddr);		\
++}
++
++#define XIic_DynSendStartStopAddress(BaseAddress, SlaveAddress, Operation) \
++{									 \
++	u8 LocalAddr = (u8)(SlaveAddress << 1);				 \
++	LocalAddr = (LocalAddr & 0xFE) | (Operation);			 \
++	xiic_setreg32(BaseAddress, XIIC_DTR_REG_OFFSET,		 \
++			XIIC_TX_DYN_START_MASK | XIIC_TX_DYN_STOP_MASK | \
++			LocalAddr);					 \
++}
++
++
++#define XIic_DynSendStop(BaseAddress, ByteCount)			\
++{									\
++	xiic_setreg32(BaseAddress, XIIC_DTR_REG_OFFSET,		\
++			XIIC_TX_DYN_STOP_MASK | ByteCount); 		\
++}
++
++
++
++u32 XIic_CheckIsBusBusy(void __iomem * BaseAddress)
++{
++	u32 StatusReg;
++
++	StatusReg = xiic_getreg32(BaseAddress, XIIC_SR_REG_OFFSET);
++	if (StatusReg & XIIC_SR_BUS_BUSY_MASK) {
++		return 1;
++	} else {
++		return 0;
++	}
++}
++
++u32 XIic_WaitBusFree(void __iomem * BaseAddress)
++{
++	u32 BusyCount = 0;
++
++	while (XIic_CheckIsBusBusy(BaseAddress)) {
++		if (BusyCount++ > 10000) {
++			return 1;
++		}
++		msleep(1);
++	}
++
++	return 0;
++}
++
++
++static unsigned int DynRecvData(void __iomem * BaseAddress, u8 *BufferPtr, u16 ByteCount)
++{
++	u32 StatusReg;
++	u32 IntrStatus;
++	u32 IntrStatusMask;
++	u8 fifo_spaceTmp = 0;
++	printk("DynRecvData ByteCount=%d\r\n", ByteCount);
++	while (ByteCount > 0) {
++		printk("DynRecvData while in ByteCount=%d\r\n", ByteCount);
++		/*
++		 * Setup the mask to use for checking errors because when
++		 * receiving one byte OR the last byte of a multibyte message
++		 * an error naturally occurs when the no ack is done to tell
++		 * the slave the last byte.
++		 */
++		if (ByteCount == 1) {
++			IntrStatusMask = XIIC_INTR_ARB_LOST_MASK | XIIC_INTR_BNB_MASK;
++		} else {
++			IntrStatusMask = XIIC_INTR_ARB_LOST_MASK | XIIC_INTR_TX_ERROR_MASK | XIIC_INTR_BNB_MASK;
++		}
++
++		/*
++		 * Wait for a byte to show up in the Rx Fifo.
++		 */
++		while (1) {
++			IntrStatus = XIic_ReadIisr(BaseAddress);
++			StatusReg = xiic_getreg32(BaseAddress,XIIC_SR_REG_OFFSET);
++			printk("DynRecvData while IntrStatus=0x%x,StatusReg=0x%x\r\n",IntrStatus, StatusReg);
++			if ((StatusReg & XIIC_SR_RX_FIFO_EMPTY_MASK) != XIIC_SR_RX_FIFO_EMPTY_MASK) {printk("DynRecvData break IntrStatus=0x%x,XIIC_SR_RX_FIFO_EMPTY_MASK=0x%x\r\n",StatusReg,XIIC_SR_RX_FIFO_EMPTY_MASK);
++				break;
++			}
++			/*
++			 * Check the transmit error after the receive full
++			 * because when sending only one byte transmit error
++			 * will occur because of the no ack to indicate the end
++			 * of the data.
++			 */
++			if (IntrStatus & IntrStatusMask) {printk("DynRecvData while StatusReg=0x%x,IntrStatus=0x%x,IntrStatusMask=0x%x\r\n", StatusReg,IntrStatus,IntrStatusMask);
++				return ByteCount;
++			}
++		}
++
++		
++		fifo_spaceTmp = IIC_RX_FIFO_DEPTH - XIic_ReadRxFifoSize(BaseAddress) - 1;
++		while(fifo_spaceTmp <= 0)
++		{
++			udelay(10);
++
++			fifo_spaceTmp = IIC_RX_FIFO_DEPTH - XIic_ReadRxFifoSize(BaseAddress) - 1;;
++
++			printk("[%s,%d] new fifo_spaceTmp=%d\n", __func__,__LINE__,fifo_spaceTmp);
++		}
++		printk("DynRecvData while ByteCount=%d,*BufferPtr=0x%x\r\n", ByteCount,*BufferPtr);
++		/*
++		 * Read in byte from the Rx Fifo. If the Fifo reached the
++		 * programmed occupancy depth as programmed in the Rx occupancy
++		 * reg, this read access will un throttle the bus such that
++		 * the next byte is read from the IIC bus.
++		 */
++		*BufferPtr++ = xiic_getreg32(BaseAddress,  XIIC_DRR_REG_OFFSET);
++		ByteCount--;
++	}
++	
++	return ByteCount;
++}
++
++
++
++static unsigned int DynSendData(void __iomem * BaseAddress, u8 *BufferPtr, u16 ByteCount, u16 Option)
++{
++	u32 IntrStatus;
++	u32 loop = 0;
++	u8 fifo_spaceTmp = 0;
++	
++	while (ByteCount > 0) {
++		/*
++		 * Wait for the transmit to be empty before sending any more
++		 * data by polling the interrupt status register.
++		 */
++		while (1) {
++			IntrStatus = XIic_ReadIisr(BaseAddress);
++			printk("DynSendData IntrStatus=0x%x\n",IntrStatus);
++			if (IntrStatus & (XIIC_INTR_TX_ERROR_MASK | XIIC_INTR_ARB_LOST_MASK | XIIC_INTR_BNB_MASK)) {
++				/*
++				 * Error condition (NACK or ARB Lost or BNB
++				 * Error Has occurred. Clear the Control
++				 * register to send a STOP condition on the Bus
++				 * and return the number of bytes still to
++				 * transmit.
++				 */
++				xiic_setreg32(BaseAddress,  XIIC_CR_REG_OFFSET,0x03);
++				xiic_setreg32(BaseAddress,  XIIC_CR_REG_OFFSET,0x01);
++				printk("DynSendData return IntrStatus=0x%x,ByteCount=%d\n",IntrStatus,ByteCount);
++				return ByteCount;
++			}
++
++			/*
++			 * Check for the transmit Fifo to become Empty.
++			 */
++			if (IntrStatus & XIIC_INTR_TX_EMPTY_MASK) {printk("DynSendData break IntrStatus=0x%x,XIIC_INTR_TX_EMPTY_MASK=0x%x\r\n",IntrStatus,XIIC_INTR_TX_EMPTY_MASK);
++				break;
++			}
++		}
++
++		fifo_spaceTmp = IIC_TX_FIFO_DEPTH - XIic_ReadTxFifoSize(BaseAddress) - 1;
++		while(fifo_spaceTmp <= 0)
++		{
++			udelay(10);
++
++			fifo_spaceTmp = IIC_TX_FIFO_DEPTH - XIic_ReadTxFifoSize(BaseAddress) - 1;;
++
++			printk("[%s,%d] new fifo_spaceTmp=%d\n", __func__,__LINE__,fifo_spaceTmp);
++		}	
++		
++		printk("DynSendData xiic_setreg32 before ByteCount=%d,data=0x%x\n",ByteCount,*BufferPtr);
++		/*
++		 * Send data to Tx Fifo. If a stop condition is specified and
++		 * the last byte is being sent, then set the dynamic stop bit.
++		 */
++		if ((ByteCount == 1) && (Option == XIIC_STOP)) {
++			/*
++			 * The MSMS will be cleared automatically upon setting
++			 *  dynamic stop.
++			 */
++			xiic_setreg32(BaseAddress,  XIIC_DTR_REG_OFFSET,XIIC_TX_DYN_STOP_MASK | *BufferPtr++);
++		} else {
++			xiic_setreg32(BaseAddress,  XIIC_DTR_REG_OFFSET,*BufferPtr++);
++		}
++
++		/*
++		 * Update the byte count to reflect the byte sent.
++		 */
++		ByteCount--;
++	}
++
++	if (Option == XIIC_STOP) {
++		/*
++		 * If the Option is to release the bus after transmission of
++		 * data, Wait for the bus to transition to not busy before
++		 * returning, the IIC device cannot be disabled until this
++		 * occurs.
++		 */
++		while (1) {
++			//printk("DynSendData 2222222222222222\n");
++			if (XIic_ReadIisr(BaseAddress) & XIIC_INTR_BNB_MASK) {
++				break;
++			}
++			mdelay(1);
++			loop++;
++
++			if (loop > 10)
++			{
++				printk("DynSendData time out\n");
++				break;
++			}
++		}
++	}
++
++	return ByteCount;
++}
++
++
++u32 xilinx_i2c_init(unsigned long BaseAddress)
++{
++
++	u32 Status;
++
++	BaseAddr = ioremap(BaseAddress,CONFIG_SIZE);
++	//printk("BaseAddr = 0x%x\n", BaseAddr);
++	/*
++	 * Reset IIC Core.
++	 */
++	xiic_setreg32(BaseAddr, XIIC_RESETR_OFFSET, XIIC_RESET_MASK);
++
++	/*
++	 * Set receive Fifo depth to maximum (zero based).
++	 */
++	xiic_setreg32(BaseAddr,  XIIC_RFD_REG_OFFSET,IIC_RX_FIFO_DEPTH - 1);
++
++	/*
++	 * Reset Tx Fifo.
++	 */
++	xiic_setreg32(BaseAddr,  XIIC_CR_REG_OFFSET,XIIC_CR_TX_FIFO_RESET_MASK);
++
++	/*
++	 * Enable IIC Device, remove Tx Fifo reset & disable general call.
++	 */
++	xiic_setreg32(BaseAddr, XIIC_CR_REG_OFFSET,XIIC_CR_ENABLE_DEVICE_MASK);
++
++	/*
++	 * Read status register and verify IIC Device is in initial state. Only
++	 * the Tx Fifo and Rx Fifo empty bits should be set.
++	 */
++	Status = xiic_getreg32(BaseAddr,  XIIC_SR_REG_OFFSET);
++	if(Status == (XIIC_SR_RX_FIFO_EMPTY_MASK | XIIC_SR_TX_FIFO_EMPTY_MASK)) {
++	    printk("s_nNewClockI2c=%d \r\n",s_nNewClockI2c);
++        xilinx_set_clock(BaseAddr, s_nNewClockI2c);
++    
++		return XST_SUCCESS;
++	}
++
++    
++	return XST_FAILURE;
++
++
++}
++
++
++void xilinx_i2c_start(void __iomem * BaseAddress,u16 Address, u16 Option)
++{
++	u32 ControlReg;
++	volatile u32 StatusReg;
++	u32 loop = 0;
++	
++	/* Wait until I2C bus is freed, exit if timed out. */
++	if (XIic_WaitBusFree(BaseAddress) != XST_SUCCESS) {
++		return 0;
++	}
++
++	/* Check to see if already Master on the Bus.
++	 * If Repeated Start bit is not set send Start bit by setting
++	 * MSMS bit else Send the address.
++	 */
++	ControlReg = xiic_getreg32(BaseAddress,  XIIC_CR_REG_OFFSET);
++	if ((ControlReg & XIIC_CR_REPEATED_START_MASK) == 0) {
++		/*
++		 * Put the address into the FIFO to be sent and indicate
++		 * that the operation to be performed on the bus is a
++		 * write operation
++		 */
++		XIic_DynSend7BitAddress(BaseAddress, (u8)Address,Option);
++		/* Clear the latched interrupt status so that it will
++		 * be updated with the new state when it changes, this
++		 * must be done after the address is put in the FIFO
++		 */
++		XIic_ClearIisr(BaseAddress, XIIC_INTR_TX_EMPTY_MASK | XIIC_INTR_TX_ERROR_MASK | XIIC_INTR_ARB_LOST_MASK);
++
++		/*
++		 * Clear the latched interrupt
++		 * status for the bus not busy bit which must be done while
++		 * the bus is busy
++		 */
++		StatusReg = xiic_getreg32(BaseAddress,  XIIC_SR_REG_OFFSET);
++		while ((StatusReg & XIIC_SR_BUS_BUSY_MASK) == 0) {
++			StatusReg = xiic_getreg32(BaseAddress,XIIC_SR_REG_OFFSET);
++
++			mdelay(1);
++			loop++;
++			
++			if (loop > 10)
++			{
++				printk("xilinx_i2c_start time out\n");
++				return;
++			}
++		}
++
++		XIic_ClearIisr(BaseAddress, XIIC_INTR_BNB_MASK);
++	}
++	else {
++		/*
++		 * Already owns the Bus indicating that its a Repeated Start
++		 * call. 7 bit slave address, send the address for a write
++		 * operation and set the state to indicate the address has
++		 * been sent.
++		 */
++		XIic_DynSend7BitAddress(BaseAddress, (u8)Address,Option);
++	}
++
++}
++
++
++u32 xilinx_i2c_read(void __iomem * BaseAddress,u8 *BufferPtr, u16 ByteCount)
++{
++	unsigned int RemainingByteCount;
++
++	/*
++	 * Write to the Tx Fifo the dynamic stop control bit with the number of
++	 * bytes that are to be read over the IIC interface from the presently
++	 * addressed device.
++	 */
++	XIic_DynSendStop(BaseAddress, ByteCount);
++	//udelay(60);int a = 0; int i = 0; for(i = 0; i < 10000000; i++) {a = 1993999 / 25;} msleep(1);printk("xilinx_i2c_read i=%d\r\n",i);
++	/*
++	 * Receive the data from the IIC bus.
++	 */
++	RemainingByteCount = DynRecvData(BaseAddress, BufferPtr, ByteCount);
++
++	/* Wait until I2C bus is freed, exit if timed out. */
++	if (XIic_WaitBusFree(BaseAddress) != XST_SUCCESS) {
++		return 0;
++	}
++	int a = 0; int i = 0; for(i = 0; i < ByteCount; i++) { printk("xilinx_i2c_read BufferPtr[%d]=0x%x\r\n",i,BufferPtr[i]); }
++	/*
++	 * The receive is complete. Return the number of bytes that were
++	 * received.
++	 */
++	return ByteCount - RemainingByteCount;
++}
++
++
++u32 xilinx_i2c_write(void __iomem * BaseAddress, u8 *BufferPtr,u16 ByteCount, u16 Option)
++{
++	unsigned int RemainingByteCount;
++
++	/*
++	 * Send the specified data to the device on the IIC bus specified by the
++	 * the address.
++	 */
++	RemainingByteCount = DynSendData(BaseAddress, BufferPtr, ByteCount, Option);
++
++	/*
++	 * The send is complete return the number of bytes that was sent.
++	 */
++	return ByteCount - RemainingByteCount;
++
++}
++
++static inline int xilinx_set_clock(void __iomem * BaseAddress, int nNewClock)
++{
++    int ret = 0;
++
++    u32 ier_tsusta = 0;
++    u32 ier_tsusto = 0;
++    u32 ier_thdsta = 0;
++    u32 ier_tsudat = 0;
++    u32 ier_tbuf   = 0;
++    u32 ier_thigh  = 0;
++    u32 ier_tlow   = 0;
++    u32 ier_thddat = 0;
++
++    //1M
++    if(nNewClock == 1000)
++    {
++        printk(" xiic_set_clock set 1MHz and get reg\r\n");
++
++        ier_tsusta = 37;
++        ier_tsusto = 37;
++        ier_thdsta = 37;
++        ier_tsudat = 16;
++        ier_tbuf   = 61;
++        ier_thigh  = 24; // 25; // 28; // 36; // 43;//  24 - 997KHZ; 25 - 981KHz; 28- 953KHz; 36 - 885KHz; 43 - 819KHz
++        ier_tlow   = 24; // 25; // 28; // 36; // 43;
++        ier_thddat = 1;
++        
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++    }
++    // 400KHz
++    else if(nNewClock == 400)
++    {
++        printk(" xiic_set_clock set 400KHz and get reg \r\n");
++        ier_tsusta = 90;
++        ier_tsusto = 90;
++        ier_thdsta = 90;
++        ier_tsudat = 40;
++        ier_tbuf   = 160;
++        //104 - 396kHz -2.48us, 106 - 390kHz, 108 - 384kHz, 112 - 373KHz  ,   118 - 357KHz
++        ier_thigh  = 106;// 106; // 108; // 110; // 112; // 114;// 116;// 100;// 118;
++        ier_tlow   = 106;// 106; // 108; // 110; // 112; // 114;// 116;// 100;//118;
++        ier_thddat = 1;
++
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++
++    }
++    // 100KHz
++    else if(nNewClock == 100)
++    {
++        printk(" xiic_set_clock set 100KHz and get reg\r\n");
++
++        ier_tsusta = 570;
++        ier_tsusto = 500;
++        ier_thdsta = 430;
++        ier_tsudat = 55;
++        ier_tbuf   = 500;
++        ier_thigh  = 493;
++        ier_tlow   = 493;
++        ier_thddat = 1;
++        
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++    }
++    // 50KHz
++    else if(nNewClock == 50)
++    {
++        printk(" xiic_set_clock set 50KHz and get reg\r\n");
++
++        ier_tsusta = 570;
++        ier_tsusto = 500;
++        ier_thdsta = 430;
++        ier_tsudat = 55;
++        ier_tbuf   = 500;
++        ier_thigh  = 993;
++        ier_tlow   = 993;
++        ier_thddat = 1;
++        
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTA, (int)(ier_tsusta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUSTO, (int)(ier_tsusto));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDSTA, (int)(ier_thdsta));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TSUDAT, (int)(ier_tsudat));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TBUF  , (int)(ier_tbuf  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THIGH , (int)(ier_thigh ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_TLOW  , (int)(ier_tlow  ));
++        xiic_setreg32(BaseAddress, XIIC_TPR_REG_OFFSET_THDDAT, (int)(ier_thddat));
++
++
++    }
++    else
++    {
++        printk("i2c xiic_set_clock xiic error nNewClock=%d \r\n",nNewClock);
++        ret = -1;
++    }
++    
++    return ret;
++}
++
++
++
+ static struct i2c_dev *i2c_dev_get_by_minor(unsigned index)
+ {
+ 	struct i2c_dev *i2c_dev;
+@@ -398,7 +1068,7 @@ static long i2cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+ 	struct i2c_client *client = file->private_data;
+ 	unsigned long funcs;
+-
++	int rc;
+ 	dev_dbg(&client->adapter->dev, "ioctl, cmd=0x%02x, arg=0x%02lx\n",
+ 		cmd, arg);
+ 
+@@ -478,6 +1148,57 @@ static long i2cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 		 */
+ 		client->adapter->timeout = msecs_to_jiffies(arg * 10);
+ 		break;
++	case I2C_SET_CLK:
++			printk("PL i2c I2C_SET_CLK name=%s\r\n",client->name);
++			printk("PL i2c I2C_SET_CLK adapter name=%s\r\n",client->adapter->name);
++			s_nNewClockI2c = arg;
++	    	if (!strcmp(client->name, "i2c-dev 2"))
++	    	{
++	        	printk("PL i2c I2C_SET_CLK clock arg=%d\r\n",arg);
++	        	funcs = xiic_i2c_setclk_extern(client->adapter, arg);
++	   	 }
++	    	else if (!strcmp(client->name, "i2c-dev 0") || !strcmp(client->name, "i2c-dev 1"))
++	    	{
++	       	 	printk("PS i2c I2C_SET_CLK clock arg=%d\r\n",arg);
++	        	funcs = cdns_i2c_setclk_extern(client->adapter, arg*1000);
++	    	}
++	    	return funcs;
++	    	break;
++	case PL_I2C_INIT:
++	{
++		//void __iomem * Base = (void __iomem *)arg;
++		//printk("PL_I2C_INIT arg = 0x%x\n ",arg);
++		xilinx_i2c_init(arg);
++		break;
++	}
++	case PL_I2C_START:
++	{
++		struct pl_i2c_start_data data_arg;
++		copy_from_user(&data_arg,(struct pl_i2c_start_data __user *)arg,sizeof(struct pl_i2c_start_data));
++		printk("start : Address = 0x%x ,option = 0x%x \n",data_arg.Address,data_arg.Option);
++		xilinx_i2c_start(BaseAddr,data_arg.Address, data_arg.Option);
++		break;
++	}
++	case PL_I2C_WRITER:
++	{
++		struct pl_i2c_writer_read_data writer_arg;
++		copy_from_user(&writer_arg,(struct pl_i2c_writer_read_data __user *)arg,sizeof(struct pl_i2c_writer_read_data));
++		//printk("PL_I2C_WRITER Option = %x ,ByteCount = %x ,Buffer[0] = %x ,Buffer[1] = %x ,Buffer[2] = %x ,Buffer[3] = %x ,Buffer[4] = %x ,Buffer[5] = %x //",writer_arg.Option,writer_arg.ByteCount,writer_arg.Buffer[0],writer_arg.Buffer[1],writer_arg.Buffer[2],writer_arg.Buffer[3],writer_arg.Buffer[4],writer_arg.Buffer[5]);
++		xilinx_i2c_write(BaseAddr,writer_arg.Buffer,writer_arg.ByteCount,writer_arg.Option);
++		break;
++	}
++	case PL_I2C_READ:
++	{
++		struct pl_i2c_writer_read_data read_arg;
++		copy_from_user(&read_arg,(struct pl_i2c_writer_read_data __user *)arg,sizeof(struct pl_i2c_writer_read_data));
++		//printk("PL_I2C_READ Option = %x,ByteCount = %x \n",read_arg.Option,read_arg.ByteCount);
++		xilinx_i2c_read(BaseAddr,read_arg.Buffer,read_arg.ByteCount);
++		//printk("PL_I2C_READ [0] = %x,[1] = %x,[2] = %x,[3] = %x \n",read_arg.Buffer[0],read_arg.Buffer[1],read_arg.Buffer[2],read_arg.Buffer[3]);
++		rc = copy_to_user((void __user *)arg, &read_arg, read_arg.ByteCount + 4);
++		if (rc)
++			return -EFAULT;
++		break;
++	}
+ 	default:
+ 		/* NOTE:  returning a fault code here could cause trouble
+ 		 * in buggy userspace code.  Some old kernel bugs returned
+-- 
+2.7.4
+

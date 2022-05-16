@@ -30,14 +30,16 @@
 #define SERIAL_MULTI  "serial=setenv stdout serial;setenv stdin serial\0"
 #define CONFIG_BAUDRATE	115200
 
-/* ethernet - psu_ethernet_3 */
+/* ethernet - psu_ethernet_2 */
 #define CONFIG_SYS_FAULT_ECHO_LINK_DOWN
 #define PHY_ANEG_TIMEOUT 20000
 #define CONFIG_MII
 #define CONFIG_NET_MULTI
 #define CONFIG_NETCONSOLE	1
-#define CONFIG_SERVERIP	192.168.21.128
-#define CONFIG_IPADDR
+#define CONFIG_SERVERIP	192.168.198.139
+#define CONFIG_IPADDR	192.168.10.1
+#define CONFIG_GATEWAYIP	192.168.10.254
+#define CONFIG_NETMASK	255.255.255.0
 
 /* spi_flash - psu_qspi_0 */
 #define XILINX_PS8_QSPI_CLK_FREQ_HZ	300000000
@@ -136,7 +138,7 @@
 #define CONFIG_ENV_SECT_SIZE	0x20000
 
 /* PREBOOT */
-#define CONFIG_PREBOOT	"echo U-BOOT for ptlnx_prj_mp_2019;setenv preboot; echo; dhcp"
+#define CONFIG_PREBOOT	"echo U-BOOT for cmcieth2mioeth3null;setenv preboot; echo; "
 
 /* Extra U-Boot Env settings */
 #define CONFIG_EXTRA_ENV_SETTINGS \
